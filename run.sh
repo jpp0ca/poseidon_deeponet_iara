@@ -1,0 +1,1 @@
+singularity exec --nv --bind /mnt/shared/storage02/projects/sonar_data/data/iara:/home/iara --bind /mnt/shared/storage02/projects/sonar_data/pedro.lisboa/poseidon/data/:/home/data -H $PWD:/home/code $HOME/hydra.sif bash
