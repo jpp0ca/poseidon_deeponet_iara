@@ -11,8 +11,8 @@ from torch.utils.data import DataLoader
 from poseidon.io.iara.offline import load_sonar_from_csv, Target, load_processed_data
 from poseidon.dataset.dataset import SonarRunDataset, SonarRunPairDataset
 from poseidon.model_selection import SonarCrossValidator
-from poseidon.signal.passivesonar import lofar
-from poseidon.signal.utils import resample
+from poseidon.signal_poseidon.passivesonar import lofar
+from poseidon.signal_poseidon.utils import resample
 
 from poseidon.visualization import plot_lofargram
 import matplotlib.pyplot as plt
@@ -70,18 +70,27 @@ sxx =  iara_spectrogram[cls][run]['sxx']
 freq = iara_spectrogram[cls][run]['freq']
 time = iara_spectrogram[cls][run]['time']
 
-from poseidon.visualization import plot_lofargram
-import matplotlib.pyplot as plt
+# from poseidon.visualization import plot_lofargram
+# import matplotlib.pyplot as plt
 
-fig, ax = plt.subplots(figsize=(10, 5))
-plot_lofargram(sxx, freq, time, ax=ax)
-plt.show()
+# fig, ax = plt.subplots(figsize=(10, 5))
+# plot_lofargram(sxx, freq, time, ax=ax)
+# plt.show()
 
 
 metadata_df = pd.read_csv(csv_path)
 metadata_df['Length'] = metadata_df['Length'].apply(lambda x: np.nan if x == ' - ' else float(x))
 metadata_df['Ship Length Class'] = metadata_df['Length'].apply(Target.classify_value)
-metadata_df
+
+metadata_df = metadata_df[metadata_df['Dataset'].isin(['D', 'H'])]
+
+# >>> CORREÇÃO 2: Resetar o índice do DataFrame após a filtragem <<<
+# O drop=True evita que o índice antigo seja adicionado como uma nova coluna.
+metadata_df.reset_index(drop=True, inplace=True)
+
+print(f"Dados filtrados. Total de amostras: {len(metadata_df)}")
+print("metadata_df")
+print(metadata_df)
 
 cross_validator = SonarCrossValidator(
     metadata_df=metadata_df,
@@ -93,15 +102,15 @@ cross_validator = SonarCrossValidator(
 
 train_data, test_data = cross_validator.get_fold_data(config.fold, cache_dir)
 
-# from poseidon.utils import calculate_class_weights
+from poseidon.utils import calculate_class_weights
 
-# device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# train_dataset = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
-# test_dataset = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False)
+train_dataset = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
+test_dataset = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False)
 
-# class_weights = calculate_class_weights(train_dataset, device)
+class_weights = calculate_class_weights(train_dataset, device)
 
-# input_size = (config.window_size, config.n_freqs)
-# model_cl = model_select(config)
-# raise NotImplementedError("Model training not implemented yet.")
+input_size = (config.window_size, config.n_freqs)
+model_cl = model_select(config)
+raise NotImplementedError("Model training not implemented yet.")

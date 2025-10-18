@@ -175,7 +175,7 @@ class LazyRunRecord(object):
             gc.collect()
 
 
-def load_sonar_from_csv(csv_path, data_root_path, target_column, verbose=1):
+def load_sonar_from_csv(csv_path, data_root_path, target_column, verbose=1, data_collection_filter = None):
     """
     Loads sonar dataset structure from a CSV file for large datasets.
 
@@ -211,6 +211,10 @@ def load_sonar_from_csv(csv_path, data_root_path, target_column, verbose=1):
         df = pd.read_csv(csv_path)
         df['Length'] = df['Length'].apply(lambda x: np.nan if x == ' - ' else float(x))
         df['Ship Length Class'] = df['Length'].apply(Target.classify_value)
+        
+        if data_collection_filter:
+            df = df[df['Dataset'].isin(data_collection_filter)]
+            df.reset_index(drop=True, inplace=True)
 
     except FileNotFoundError:
         print(f"Error: Metadata CSV file not found at {csv_path}")

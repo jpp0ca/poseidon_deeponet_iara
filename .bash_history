@@ -30,3 +30,42 @@ cd code
 pwd
 cd ..
 ls
+clear
+pip install dotwiz
+pip install seaborn
+ls
+pip install .
+clear
+python poseidon/iara.py 
+cd ..
+ls
+cd code
+ls
+clear
+python poseidon/iara.py 
+pip install .
+clear
+python poseidon/iara.py 
+cat ../data/iara.csv
+clear
+vim ../data/iara.csv 
+clear
+cat ../data/iara.csv
+clear
+python poseidon/iara.py 
+python poseidon/iara.py 
+python poseidon/iara.py 
+python poseidon/iara.py 
+clear
+python poseidon/iara.py 
+clear
+python poseidon/iara.py 
+clear
+python poseidon/iara.py 
+clear
+pwd
+python3 -m notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+pip install notebook
+clear
+python3 -m notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+exit

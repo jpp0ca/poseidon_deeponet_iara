@@ -95,3 +95,25 @@ target/
 *.sif
 
 .local
+
+*__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.pkl.gz
+*.h5
+*.hdf5
+*.pt
+*.pth
+
+.bash_history
+.ipynb_checkpoints
+.netrc
+
+config_hashes.txt
+data/*
+wandb/*
+results/*
+results_back/*
+best/*
