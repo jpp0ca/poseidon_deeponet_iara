@@ -1,0 +1,22 @@
+{
+    "dataset": {
+        "name": "iara",
+        "metadata_path": "../data/iara.csv",
+        "raw_data_path" : "/home/iara/",
+        "cache_path" : "./data/iara_cache"
+    },
+    "window_size": 16,
+    "overlap" : 0,
+    "n_freqs": 512,
+    "learning_rate": 0.001,
+    "model_name": "MLP",
+    "output_size": 4,
+    "batch_size": 32,
+    "hidden_size": 128,
+    "n_splits": 5,
+    "fold": 0,
+    "epochs": 100,
+    "patience": 10,
+    "seed": 42,
+    "dc_filter": ["D", "H"]
+}

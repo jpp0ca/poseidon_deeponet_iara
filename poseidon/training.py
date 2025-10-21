@@ -97,7 +97,10 @@ class Trainer:
             with alive_bar(len(train_loader), title=f"Training Epoch {epoch+1}/{self.num_epochs}") as bar:
                 for batch_data, batch_target in train_loader:
                     self.optimizer.zero_grad()
-                    output = self.model(batch_data)
+                    if isinstance(batch_data, (list, tuple)):
+                        output = self.model(*batch_data)
+                    else:
+                        output = self.model(batch_data)
                     loss = self.criterion(output, batch_target)
                     loss.backward()
                     self.optimizer.step()
@@ -154,7 +157,10 @@ class Trainer:
         val_loss = 0.0
         with torch.no_grad():
             for batch_data, batch_target in test_loader:
-                output = self.model(batch_data)
+                if isinstance(batch_data, (list, tuple)):
+                    output = self.model(*batch_data)
+                else:
+                    output = self.model(batch_data)
                 loss = self.criterion(output, batch_target)
                 val_loss += loss.item()
                 _, preds = torch.max(output, 1)

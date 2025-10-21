@@ -69,3 +69,21 @@ pip install notebook
 clear
 python3 -m notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root
 exit
+clear
+ls
+python run_model.py 
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model_v2.py --config CNN
+python run_model_v2.py --config CNN

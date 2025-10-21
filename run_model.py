@@ -14,12 +14,16 @@ import torch
 from poseidon.models.mlp import MLP
 from poseidon.models.cnn import CNN
 from poseidon.models.deeponet import DeepONet
-from poseidon.training import Trainer, calculate_class_weights, DeepONetTrainer
+from poseidon.training import Trainer, DeepONetTrainer
 from poseidon.io.iara.offline import load_sonar_from_csv, Target, load_processed_data
 from poseidon.signal_poseidon.passivesonar import lofar
 from poseidon.signal_poseidon.utils import resample
+from poseidon.model_selection import SonarCrossValidator
+from poseidon.dataset.dataset import SonarRunDataset, SonarRunDeepONetDataset
+from poseidon.utils import calculate_class_weights
 from pathlib import Path
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import json
 import argparse
@@ -31,6 +35,7 @@ from torch.utils.data import DataLoader
 from dotwiz import DotWiz
 import matplotlib
 matplotlib.use('agg')
+import datetime as dt
 
 
 PATHS = {"dataset": {
@@ -65,30 +70,7 @@ def lofar_fn(x):
     return lofar(signal, fs, n_pts_fft=1024, n_overlap=0,
                   spectrum_bins_left=512)
 
-def load_data(config):
-    csv_path = config.dataset.metadata_path
-    iara_data_root_path = config.dataset.raw_data_path
-    iara_raw = load_sonar_from_csv(csv_path, data_root_path=iara_data_root_path, target_column="Ship Length Class", data_collection_filter=config.dc_filter)
-
-    cache_dir = config.dataset.cache_path
-    Path(cache_dir).mkdir(parents=True, exist_ok=True)  
-    
-    iara_raw.process_and_cache(fn=lofar_fn, max_workers=8, cache_path=cache_dir)
-
-    iara_spectrogram = load_processed_data(cache_dir)
-
-    print("=" * 75)
-    print("Completed Data Preprocessing with the Following Configuration:")
-    print(f" - FFT Points               : {1024}")
-    print(f" - Window Overlap           : {0}")
-    print(f" - Decimation Rate          : {3}")
-    print(f" - Final Sampling Frequency : {16000}")
-    print("=" * 75)
-
-    return iara_spectrogram
-
 def model_select(config, branch_net = None):
-    window_size = config.window_size
     
     if config.model_name == "DeepONet-MLP-MLP":
         return lambda input_size, coords: DeepONet(branch_net= MLP(input_shape=input_size,
@@ -128,7 +110,7 @@ def model_select(config, branch_net = None):
         return lambda input_size, coords: MLP(input_shape=input_size, hidden_channels=config.hidden_channels, n_targets=4, dropout=config.dropout)
     
     elif config.model_name == "CNN":
-        return lambda input_size: CNN(input_shape=input_size,
+        return lambda input_size, coords: CNN(input_shape=input_size,
                                       conv_n_neurons=config.conv_n_neurons,
                                       conv_activation=torch.nn.PReLU,
                                       conv_pooling=torch.nn.MaxPool2d,
@@ -143,184 +125,127 @@ def model_select(config, branch_net = None):
     else:
         raise ValueError(f"Model name {config.model_name} not recognized.")
 
-def run_experiment(config, lofar_data, results_path, device):
+def run_experiment(config, results_path, device):
     # Initialize the model, optimizer, and criterion
     alpha = config.alpha if hasattr(config, 'alpha') else None
-    window_size = config.window_size
-    
-    non_multitask_models_list = ["MLP", "DeepONet-MLP-MLP", "DeepONet-CNN-MLP"]
 
-    if window_size is None:
-        overlap = None
+    csv_path = PATHS["dataset"]["metadata_path"]
+    metadata_df = pd.read_csv(csv_path)
+    metadata_df['Length'] = metadata_df['Length'].apply(lambda x: np.nan if x == ' - ' else float(x))
+    metadata_df['Ship Length Class'] = metadata_df['Length'].apply(Target.classify_value)
+    if PATHS["dc_filter"]:
+        metadata_df = metadata_df[metadata_df['Dataset'].isin(PATHS["dc_filter"])]
+    metadata_df.reset_index(drop=True, inplace=True)
+
+    # Inicializa o validador cruzado com estratificação
+    cross_validator = SonarCrossValidator(
+        metadata_df=metadata_df,
+        target_column='Ship Length Class',
+        stratify_columns=['Ship Length Class', 'Dataset'],
+        n_splits=5,
+        random_state=42
+    )
+
+    # Pega os dados (nomes de arquivo e labels) para o fold específico
+    fold = config.fold
+    cache_dir = PATHS["dataset"]["cache_path"]
+    train_data_files, test_data_files = cross_validator.get_fold_data(fold, cache_dir)
+    
+    # Define os parâmetros de janelamento
+    window_size = config.window_size
+    is2d = config.model_name in ["CNN", "DeepONet-CNN-MLP"]
+    if window_size is None or window_size == 1:
+        overlap = 0
+        is2d = False
     elif window_size == 16:
         overlap = 14
     elif window_size == 32:
         overlap = 28
     else:
-        raise ValueError(f"Window size {window_size} not recognized.")
+        raise ValueError(f"Window size {window_size} não reconhecido.")
 
+    # Seleciona o Dataset correto com base no nome do modelo
+    if config.model_name in ["DeepONet-MLP-MLP", "DeepONet-CNN-MLP"]:
+        print("Usando o DataLoader para DeepONet...")
+        train_dataset = SonarRunDeepONetDataset(train_data_files, window_size=window_size, overlap=overlap, is2d=is2d)
+        test_dataset = SonarRunDeepONetDataset(test_data_files, window_size=window_size, overlap=overlap, is2d=is2d)
+    else:
+        print("Usando o DataLoader padrão...")
+        train_dataset = SonarRunDataset(train_data_files, window_size=window_size, overlap=overlap, is2d=is2d)
+        test_dataset = SonarRunDataset(test_data_files, window_size=window_size, overlap=overlap, is2d=is2d)
+
+    print("Passando pelo DataLoader do torch")
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, drop_last=True)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, drop_last=True)
+    
+    coords_size = None
+    input_size = None
+        
+    first_batch = next(iter(train_loader))
+    sample_batch_inputs = first_batch[0] # O primeiro item do batch são sempre as features
+
+    if config.model_name in ["DeepONet-MLP-MLP", "DeepONet-CNN-MLP"]:
+        # Para o DeepONet, as features são uma tupla: (dados, coordenadas)
+        sample_x, sample_coords = sample_batch_inputs
+        input_size = sample_x.shape[1:]
+        coords_size = sample_coords.shape[1:]
+    else:
+        # Para modelos padrão, as features são apenas o tensor de dados
+        input_size = sample_batch_inputs.shape[1:]
+    
+    print("Definindo o modelo")
     model_builder = model_select(config)
-    # Perform cross-validation using LoroCV
-    accuracies = []
-    embeddings = []
-    all_targets    = []
-    lorocv_no_window = LoroCV(n_splits=5, window_size=window_size, overlap=overlap, random_seed=42)
+    model_fold = model_builder(input_size, coords_size).to(device)
+    
+    print("Definindo optm")
+    optimizer_fold = torch.optim.Adam(model_fold.parameters(), lr=config.learning_rate)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer_fold, gamma=0.93)
+    
+    print("Definindo LossFunction e Pesos")
+    class_weights = calculate_class_weights(train_dataset, device)
+    clf_criterion_fold = torch.nn.CrossEntropyLoss(weight=class_weights)
 
-    fold = config.fold
-    for i, (X_train, y_train, X_test, y_test, coords_train, coords_test) in enumerate(lorocv_no_window.split(lofar_data)):
-        if i != fold:
-            continue
-        # Compute class weights for loss balancing
-        class_weights = calculate_class_weights(y_train).to(device)
-        
-        if config.model_name in ["CNN", "DeepONet-CNN-MLP"]:
-            X_train = np.expand_dims(X_train, axis=1) # Adiciona a dimensão do canal
-            X_test = np.expand_dims(X_test, axis=1)
-        
-        # Create DataLoader instances for the fold
-        is2d = window_size is not None and config.model_name != "MLP"
-        if config.model_name in ["DeepONet-MLP-MLP", "DeepONet-CNN-MLP"]:
-            train_dataset_fold = DeepOnetDataLoader(X_train, y_train, coords_train, device=device)
-            test_dataset_fold = DeepOnetDataLoader(X_test, y_test, coords_test, device=device)
-        else:
-            train_dataset_fold = CustomDataloader(X_train, y_train, is2d=is2d, device=device)
-            test_dataset_fold = CustomDataloader(X_test, y_test, is2d=is2d, device=device)
-        train_loader_fold = DataLoader(train_dataset_fold, batch_size=32, shuffle=True, drop_last=True)
-        test_loader_fold = DataLoader(test_dataset_fold, batch_size=32, shuffle=False, drop_last=True)
+    # if config.model_name in non_multitask_models_list:
+    
+    print("Inputando o trainer")
+    trainer_fold = Trainer(model_fold, optimizer_fold, scheduler, clf_criterion_fold,
+                                num_epochs=100, verbose=True, wandb_logging=True)
+    
+    if config.model_name in ["DeepONet-MLP-MLP", "DeepONet-CNN-MLP"]:
+        trainer_fold = DeepONetTrainer(model_fold, optimizer_fold, scheduler, clf_criterion_fold,
+                                num_epochs=100, verbose=True, wandb_logging=True)
+    
+    print("Iniciando o treinamento")
+    trainer_fold.train(train_loader_fold, test_loader_fold, patience=10)
+    
+    _, accuracy, precision, recall, f1, roc_auc, y_pred, y_target = trainer_fold.evaluate(test_loader_fold)
+    wandb.log({
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1,
+        "roc_auc": roc_auc
+    })
+    
+    np.save(results_path / "data" / f"predictions_fold_{fold}.npy", y_pred)
+    np.save(results_path / "data" / f"targets_fold_{fold}.npy", y_target)
+                
+    fold_embeddings, fold_targets, fold_scores = trainer_fold.evaluate_embeddings(test_loader_fold)
+    embeddings.append(fold_embeddings)
+    all_targets.append(fold_targets)
 
-        input_size = X_train.shape[1:] if config.model_name in ["CNN", "DeepONet-CNN-MLP"] else X_train.shape[1]
-        coords_size = coords_train.shape[1]
-        model_fold = model_builder(input_size, coords_size).to(device)
-        optimizer_fold = torch.optim.Adam(model_fold.parameters(), lr=config.learning_rate)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer_fold, gamma=0.93)
-        clf_criterion_fold = torch.nn.CrossEntropyLoss(weight=class_weights)
+    accuracies.append(accuracy)
 
-        # if config.model_name in non_multitask_models_list:
-        
-        trainer_fold = Trainer(model_fold, optimizer_fold, scheduler, clf_criterion_fold,
-                                   num_epochs=100, verbose=True, wandb_logging=True)
-        
-        if config.model_name in ["DeepONet-MLP-MLP", "DeepONet-CNN-MLP"]:
-            trainer_fold = DeepONetTrainer(model_fold, optimizer_fold, scheduler, clf_criterion_fold,
-                                    num_epochs=100, verbose=True, wandb_logging=True)
-            
-        trainer_fold.train(train_loader_fold, test_loader_fold, patience=10)
-        
-        _, accuracy, precision, recall, f1, roc_auc, y_pred, y_target = trainer_fold.evaluate(test_loader_fold)
-        wandb.log({
-            "accuracy": accuracy,
-            "precision": precision,
-            "recall": recall,
-            "f1_score": f1,
-            "roc_auc": roc_auc
-        })
-        
-        np.save(results_path / "data" / f"predictions_fold_{fold}.npy", y_pred)
-        np.save(results_path / "data" / f"targets_fold_{fold}.npy", y_target)
-                    
-        fold_embeddings, fold_targets, fold_scores = trainer_fold.evaluate_embeddings(test_loader_fold)
-        embeddings.append(fold_embeddings)
-        all_targets.append(fold_targets)
+    wandb.log(fold_scores)
+    
+    fig, ax = plt.subplots(figsize=(12, 12/ 1.618))
+    plot_tsne_embeddings(ax, fold_embeddings, fold_targets, palette=palette)
+    plot_name = f"t-SNE_embeddings_fold_{i}"
+    fig.savefig(results_path / "plots" / "png" / f"{plot_name}.png", bbox_inches='tight', dpi=300)
+    fig.savefig(results_path / "plots" / "svg" / f"{plot_name}.svg", bbox_inches='tight')
 
-        accuracies.append(accuracy)
-
-        wandb.log(fold_scores)
-        
-        fig, ax = plt.subplots(figsize=(12, 12/ 1.618))
-        plot_tsne_embeddings(ax, fold_embeddings, fold_targets, palette=palette)
-        plot_name = f"t-SNE_embeddings_fold_{i}"
-        fig.savefig(results_path / "plots" / "png" / f"{plot_name}.png", bbox_inches='tight', dpi=300)
-        fig.savefig(results_path / "plots" / "svg" / f"{plot_name}.svg", bbox_inches='tight')
-
-        wandb.log({"t-SNE plot": wandb.Image(fig)})
-        plt.close(fig)
-        
-        continue
-        
-        # else:
-        #     rec_criterion_fold = torch.nn.MSELoss()
-        #     trainer_fold = MultitaskTrainer(model_fold, optimizer_fold, scheduler,
-        #                                     clf_criterion_fold,
-        #                                     rec_criterion_fold,
-        #                                     alpha=alpha,
-        #                                     num_epochs=100, verbose=True, wandb_logging=True)
-        #     trainer_fold.train(train_loader_fold, test_loader_fold, patience=10)
-            
-        #     # Evaluate the model on the test fold
-        #     _, accuracy, precision, recall, f1, sp, roc_auc = trainer_fold.evaluate(test_loader_fold)
-        #     wandb.log({
-        #         "accuracy": accuracy,
-        #         "precision": precision,
-        #         "recall": recall,
-        #         "f1_score": f1,
-        #         "sp_index": sp,
-        #         "roc_auc": roc_auc
-        #     })
-
-        #     # Evaluate the embeddings
-        #     fold_embeddings, fold_targets, fold_scores = trainer_fold.evaluate_embeddings(test_loader_fold)
-        #     embeddings.append(fold_embeddings)
-        #     all_targets.append(fold_targets)
-
-        #     accuracies.append(accuracy)
-
-        #     wandb.log(fold_scores)
-
-        #     fig, ax = plt.subplots(figsize=(12, 12/ 1.618))
-        #     plot_tsne_embeddings(ax, fold_embeddings, fold_targets, palette=palette)
-        #     plot_name = f"t-SNE_embeddings_fold_{i}"
-        #     fig.savefig(results_path / "plots" / "png" / f"{plot_name}.png", bbox_inches='tight', dpi=300)
-        #     fig.savefig(results_path / "plots" / "svg" / f"{plot_name}.svg", bbox_inches='tight')
-
-        #     wandb.log({"t-SNE plot": wandb.Image(fig)})
-        #     plt.close(fig)
-
-        #     continuous_eval = trainer_fold.evaluate_embeddings_continuity(fold_embeddings, fold_targets)
-        #     continuous_embeddings = {i_cls: continuous_eval[i_cls]["class_embeddings"] for i_cls in continuous_eval.keys()}
-
-        #     fig, axes = plt.subplots(4, 2, figsize=(8, 8/ 1.618))
-        #     for i_cls, ce_scores in continuous_eval.items():
-        #         spearman_correlation = ce_scores["scores"]["spearman"]["correlation"]
-        #         distances_from_start = ce_scores["scores"]["spearman"]["distances_from_start"]
-        #         time_ranks = ce_scores["scores"]["spearman"]["time_ranks"]
-
-        #         local_consistency = ce_scores["scores"]["local_consistency"]["local_consistency"]
-        #         step_lengths = ce_scores["scores"]["local_consistency"]["step_lengths"]
-
-        #         axes[i_cls, 0].plot(time_ranks, distances_from_start)
-        #         axes[i_cls, 1].plot(time_ranks, step_lengths)
-
-        #     plot_name = f"continuity_measures_fold{i}"
-        #     fig.savefig(results_path / "plots" / "png" / f"{plot_name}.png", bbox_inches='tight', dpi=300)
-        #     fig.savefig(results_path / "plots" / "svg" / f"{plot_name}.svg", bbox_inches='tight')
-
-        #     wandb.log({"Continuity Measures": wandb.Image(fig)})
-        #     plt.close(fig)
-
-        #     fig, axes = plt.subplots(2, 2, figsize=(8, 8/ 1.618), sharex=True, sharey=True)
-        #     axf = axes.flat
-        #     for i_cls, (trgt, cls_embeddings) in enumerate(continuous_embeddings.items()):
-        #         num_windows = len(cls_embeddings)
-        #         indices = np.array(list(range(num_windows)))/num_windows
-        #         axf[i_cls].scatter(cls_embeddings[:, 0], cls_embeddings[:, 1], s=1,
-        #                        c=indices, cmap='inferno', alpha=0.7)
-        #         axf[i_cls].set_xlabel('t-SNE Dimension 1', fontsize=8)
-        #         axf[i_cls].set_ylabel('t-SNE Dimension 2', fontsize=8)
-        #         axf[i_cls].grid(True, linestyle='--', alpha=0.5)
-        #         axf[i_cls].axhline(0, color='black', linewidth=0.5)
-        #         axf[i_cls].axvline(0, color='black', linewidth=0.5)
-
-        #     norm = plt.Normalize(vmin=0, vmax=1)
-        #     sm = plt.cm.ScalarMappable(cmap='inferno', norm=norm)
-        #     cbar = fig.colorbar(sm, ax=axf, orientation='vertical', pad=0.1, fraction=0.02)
-        #     cbar.set_label('Normalized Time Progression')
-
-        #     plot_name = f"t-SNE_embeddings-CONTINUITY_fold_{i}"
-        #     fig.savefig(results_path / "plots" / "png" / f"{plot_name}.png", bbox_inches='tight', dpi=300)
-        #     fig.savefig(results_path / "plots" / "svg" / f"{plot_name}.svg", bbox_inches='tight')
-
-        #     wandb.log({"t-SNE continuity plot": wandb.Image(fig)})
-        #     plt.close(fig)
+    wandb.log({"t-SNE plot": wandb.Image(fig)})
+    plt.close(fig)
 
     return embeddings, all_targets
 
@@ -396,9 +321,7 @@ def sweep_experiment(project_name, run_name):
     
     cons_paths = DotWiz(PATHS)
 
-    lofar_data = load_data(cons_paths)
-
-    embeddings, all_targets = run_experiment(config, lofar_data, results_path, device)
+    embeddings, all_targets = run_experiment(config, results_path, device)
 
     if config.model_name != "MLP":
         save_embeddings_and_targets(config, embeddings, all_targets, results_path)
@@ -410,6 +333,8 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str, default='config', help='Path to the configuration file')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     args = parser.parse_args()
+    
+    now_str = dt.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
     # lofar_data, _, _ = load_data()
 
@@ -418,9 +343,9 @@ if __name__ == '__main__':
         sweep_configuration = json.load(f)
 
     if args.debug:
-        project_name = f'{args.config}-debug-v6'
+        project_name = f'{args.config}-debug-{now_str}'
     else:
-        project_name = f'{args.config}-v6'
+        project_name = f'{args.config}-{now_str}'
     sweep_configuration['name'] = f"{project_name}-sweep"
 
     sweep_id = wandb.sweep(sweep_configuration, project=project_name)

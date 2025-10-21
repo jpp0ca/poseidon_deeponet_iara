@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 import random
+import numpy as np
 
 class SonarRunDataset(Dataset):
     """
@@ -121,3 +122,48 @@ class SonarRunPairDataset(Dataset):
             window_t_plus_offset = window_t_plus_offset.unsqueeze(0)
             
         return window_t, window_t_plus_offset, label_tensor
+    
+
+class SonarRunDeepONetDataset(SonarRunDataset):
+    """
+    Dataset customizado para o DeepONet que herda de SonarRunDataset.
+
+    Além de carregar e janelar os dados, esta classe gera as coordenadas
+    normalizadas (t, x) para cada janela, que são necessárias para o
+    branch net do DeepONet.
+    """
+    def __init__(self, run_data, window_size, overlap=0, is2d=False):
+        # Reutiliza o construtor da classe pai para preparar os dados
+        super().__init__(run_data, window_size, overlap, is2d)
+        self.coords = None
+
+    def __getitem__(self, idx):
+        # Pega a janela do espectrograma e o label usando a lógica da classe pai
+        spectrogram_window, label = super().__getitem__(idx)
+
+        # Agora, gera as coordenadas para esta janela
+        if self.is2d:
+            # Caso 2D (ex: para CNN-DeepONet)
+            # A entrada é (C, H, W), mas as coordenadas são sobre H, W
+            # Supondo que o shape seja (C, H, W) -> pegamos H e W
+            _, height, width = spectrogram_window.shape
+            
+            # Cria vetores de coordenadas para os eixos de tempo e frequência
+            grid_t = torch.linspace(-1, 1, steps=width)
+            grid_f = torch.linspace(-1, 1, steps=height)
+            
+            # Cria a grade (meshgrid) e empilha para ter pares (t, f)
+            mesh_t, mesh_f = torch.meshgrid(grid_t, grid_f, indexing='xy')
+            coords = torch.stack((mesh_t.flatten(), mesh_f.flatten()), dim=1)
+
+        else:
+            # Caso 1D (ex: para MLP-DeepONet)
+            # A entrada é (L,)
+            length = spectrogram_window.shape[0]
+            coords = torch.linspace(-1, 1, steps=length).unsqueeze(-1) # Shape (L, 1)
+        
+        self.coords = coords
+
+        # O modelo DeepONet espera a entrada como uma tupla (função, coordenadas)
+        # Então, o DataLoader deve retornar ((espectrograma, coords), label)
+        return (spectrogram_window.float(), coords.float()), torch.tensor(label, dtype=torch.long)
