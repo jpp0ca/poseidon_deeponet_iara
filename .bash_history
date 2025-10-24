@@ -87,3 +87,23 @@ python run_model.py --config CNN
 clear
 python run_model_v2.py --config CNN
 python run_model_v2.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN
+clear
+python run_model.py --config CNN

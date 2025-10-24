@@ -52,6 +52,7 @@ def _process_single_file(fn, run_name, run_data, output_filepath, *args, **kwarg
     saves the result, and ensures memory is released.
     """
     try:
+        print("bateu na _process_single_file")
         # This triggers the LazyRunRecord to load the raw audio
         processed_result = fn(run_data, *args, **kwargs)
         

@@ -145,6 +145,8 @@ def run_experiment(config, results_path, device):
         n_splits=5,
         random_state=42
     )
+    
+    labels = metadata_df['Ship Length Class']
 
     # Pega os dados (nomes de arquivo e labels) para o fold específico
     fold = config.fold
@@ -175,13 +177,13 @@ def run_experiment(config, results_path, device):
         test_dataset = SonarRunDataset(test_data_files, window_size=window_size, overlap=overlap, is2d=is2d)
 
     print("Passando pelo DataLoader do torch")
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, drop_last=True)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, drop_last=True)
+    train_loader_fold = DataLoader(train_dataset, batch_size=32, shuffle=True, drop_last=True)
+    test_loader_fold = DataLoader(test_dataset, batch_size=32, shuffle=False, drop_last=True)
     
     coords_size = None
     input_size = None
         
-    first_batch = next(iter(train_loader))
+    first_batch = next(iter(train_loader_fold))
     sample_batch_inputs = first_batch[0] # O primeiro item do batch são sempre as features
 
     if config.model_name in ["DeepONet-MLP-MLP", "DeepONet-CNN-MLP"]:
@@ -201,8 +203,13 @@ def run_experiment(config, results_path, device):
     optimizer_fold = torch.optim.Adam(model_fold.parameters(), lr=config.learning_rate)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer_fold, gamma=0.93)
     
-    print("Definindo LossFunction e Pesos")
-    class_weights = calculate_class_weights(train_dataset, device)
+    print("Definindo Pesos")
+    class_weights = calculate_class_weights(labels, device)
+    print(type(class_weights))
+    
+    class_weights = torch.tensor(class_weights, device= device)
+    
+    print ("Definindo Loss")
     clf_criterion_fold = torch.nn.CrossEntropyLoss(weight=class_weights)
 
     # if config.model_name in non_multitask_models_list:
