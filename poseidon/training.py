@@ -76,7 +76,7 @@ def sp_index(recall):
 
 
 class Trainer:
-    def __init__(self, model, optimizer, scheduler, criterion, num_epochs=10, verbose=False, plotpath=None, wandb_logging=False):
+    def __init__(self, model, optimizer, scheduler, criterion, num_epochs=10, verbose=False, plotpath=None, wandb_logging=False, device=None):
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -85,6 +85,7 @@ class Trainer:
         self.verbose = verbose
         self.plotpath = plotpath
         self.wandb_logging = wandb_logging
+        self.device = device
 
     def train(self, train_loader, test_loader, patience=10):
         self.model.train()
@@ -97,6 +98,14 @@ class Trainer:
             with alive_bar(len(train_loader), title=f"Training Epoch {epoch+1}/{self.num_epochs}") as bar:
                 for batch_data, batch_target in train_loader:
                     self.optimizer.zero_grad()
+                    batch_data = batch_data.to(self.device)                 
+                    
+                    # print(type(batch_data))
+                    
+                    batch_target = batch_target.to(self.device)
+                    
+                    # batch_data = batch_data.float()
+                    # batch_target = batch_target.float()
                     if isinstance(batch_data, (list, tuple)):
                         output = self.model(*batch_data)
                     else:

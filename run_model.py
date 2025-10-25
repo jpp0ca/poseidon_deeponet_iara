@@ -67,8 +67,30 @@ def lofar_fn(x):
     fs = 16000
     # x is a dict with keys 'signal' and 'fs'
     # x['signal'] is the audio signal, x['fs'] is the sampling frequency
-    return lofar(signal, fs, n_pts_fft=1024, n_overlap=0,
+    lofar_value = lofar(signal, fs, n_pts_fft=1024, n_overlap=0,
                   spectrum_bins_left=512)
+    power = lofar_value['sxx']
+    freq = lofar_value['freq']
+    time = lofar_value['time']
+    
+    delta_t = time[-1] - time[-2]
+    
+    integration_interval = 0.512
+    integration_overlap = 0
+    
+    n_means = int(np.round(integration_interval / delta_t))
+    n_overlap = int(np.round((integration_interval-integration_overlap)/ delta_t))
+
+    final_power = []
+    final_times = []
+
+    for i in range(0, len(time), n_overlap):
+        mean_spectrum = np.mean(power[:, i:i+n_means], axis=1)
+        final_power.append(mean_spectrum)
+        final_times.append(time[i])
+        
+    return {'sxx': np.transpose(final_power), 'freq': freq, 'time':final_times}
+    
 
 def model_select(config, branch_net = None):
     
@@ -136,6 +158,16 @@ def run_experiment(config, results_path, device):
     if PATHS["dc_filter"]:
         metadata_df = metadata_df[metadata_df['Dataset'].isin(PATHS["dc_filter"])]
     metadata_df.reset_index(drop=True, inplace=True)
+    
+    iara_data_root_path = PATHS["dataset"]["raw_data_path"]
+    iara_raw = load_sonar_from_csv(csv_path, data_root_path=iara_data_root_path, target_column="Ship Length Class", data_collection_filter=PATHS["dc_filter"])
+    
+    cache_dir = PATHS["dataset"]["cache_path"]
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    
+    iara_raw.process_and_cache(fn=lofar_fn, max_workers=8, cache_path=cache_dir)
+
+    iara_spectrogram = load_processed_data(cache_dir)
 
     # Inicializa o validador cruzado com estratificação
     cross_validator = SonarCrossValidator(
@@ -204,10 +236,8 @@ def run_experiment(config, results_path, device):
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer_fold, gamma=0.93)
     
     print("Definindo Pesos")
-    class_weights = calculate_class_weights(labels, device)
+    class_weights = calculate_class_weights(labels, device).to(device)
     print(type(class_weights))
-    
-    class_weights = torch.tensor(class_weights, device= device)
     
     print ("Definindo Loss")
     clf_criterion_fold = torch.nn.CrossEntropyLoss(weight=class_weights)
@@ -216,7 +246,7 @@ def run_experiment(config, results_path, device):
     
     print("Inputando o trainer")
     trainer_fold = Trainer(model_fold, optimizer_fold, scheduler, clf_criterion_fold,
-                                num_epochs=100, verbose=True, wandb_logging=True)
+                                num_epochs=100, verbose=True, wandb_logging=True, device=device)
     
     if config.model_name in ["DeepONet-MLP-MLP", "DeepONet-CNN-MLP"]:
         trainer_fold = DeepONetTrainer(model_fold, optimizer_fold, scheduler, clf_criterion_fold,

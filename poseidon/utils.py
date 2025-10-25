@@ -16,12 +16,13 @@ def calculate_class_weights(labels, device):
     # print ("pegando os labels do zip(*train_dataset_fold)")
     # _, _, labels = zip(*train_dataset_fold)
     
-    print ("tranformando os labels em tensor")
-    labels = torch.tensor(labels, device=device)
+    # print ("tranformando os labels em tensor")
+    # labels = torch.tensor(labels, device=device)
     
-    print("transformando labels em np array")
-    labels = np.array([label.cpu().numpy() for label in labels])
+    # print("transformando labels em np array")
+    # labels = np.array([label.cpu().numpy() for label in labels])
     
     print("calculando class_weight")
     class_weights = compute_class_weight('balanced', classes=np.unique(labels), y=labels)
+    class_weights = torch.tensor(class_weights, dtype=torch.float32)
     return class_weights
